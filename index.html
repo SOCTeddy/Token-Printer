@@ -217,12 +217,37 @@ details summary { cursor: pointer; color: var(--muted); }
     return j.data || [];
   }
 
-  function norm(c) {
-    const f = (!c.image_uris && c.card_faces) ? c.card_faces[0] : c;
-    const im = f.image_uris || c.image_uris || {};
-    return { name: f.name, type: f.type_line || c.type_line || '', text: f.oracle_text || '',
-      p: f.power ?? null, t: f.toughness ?? null, colors: c.colors || f.colors || [],
-      thumb: im.small || im.normal || '', art: im.art_crop || '' };
+  // Split double-sided token cards (e.g. "Treasure // Zombie") into separate sides
+  function faces(c) {
+    const list = (c.card_faces && c.card_faces.length > 1) ? c.card_faces : [c];
+    return list.map(f => {
+      const im = f.image_uris || c.image_uris || {};
+      return { name: f.name, type: f.type_line || c.type_line || '', text: f.oracle_text || '',
+        p: f.power ?? null, t: f.toughness ?? null, colors: f.colors || c.colors || [],
+        thumb: im.small || im.normal || '', art: im.art_crop || '' };
+    });
+  }
+
+  function matches(tok, p) {
+    const hay = (tok.name + ' ' + tok.type).toLowerCase();
+    if (p.p != null && String(tok.p).toLowerCase() !== p.p) return false;
+    if (p.t != null && String(tok.t).toLowerCase() !== p.t) return false;
+    for (const w of p.words) if (!hay.includes(w)) return false;
+    const txt = tok.text.toLowerCase();
+    for (const k of p.kw) if (!txt.includes(k)) return false;
+    return true;
+  }
+
+  // Keep only the sides that match, drop duplicates, closest match first
+  function pickTokens(cards, p) {
+    const all = cards.flatMap(faces);
+    let list = all.filter(t => matches(t, p));
+    if (!list.length) list = all;
+    const seen = new Set();
+    list = list.filter(t => { const k = [t.name, t.p, t.t, t.text].join('|'); if (seen.has(k)) return false; seen.add(k); return true; });
+    const want = p.words.join(' ');
+    const score = t => (t.name.toLowerCase() === want ? 0 : 1000) + t.text.length;
+    return list.sort((a, b) => score(a) - score(b));
   }
 
   let searchSeq = 0;
@@ -232,16 +257,27 @@ details summary { cursor: pointer; color: var(--muted); }
     const seq = ++searchSeq;
     const p = parse(raw);
     if (p.qty) setQty(Math.min(p.qty, 20));
+    state.token = null; state.artImg = null; $('panel').hidden = true;   // no stale preview while searching
     setStatus('Searching…');
     try {
       let cards = await scryfall(toQuery(p, true));
       if (!cards.length && p.words.length) cards = await scryfall(toQuery(p, false)); // names like "Marit Lage"
       if (seq !== searchSeq) return;
-      const tokens = cards.map(norm);
+      const tokens = pickTokens(cards, p);
       renderResults(tokens);
       if (!tokens.length) setStatus(`No tokens matched "${raw}". Try fewer words, or make a custom token below.`, true);
-      else { setStatus(tokens.length === 1 ? '1 token found.' : `${tokens.length} tokens found. Tap one to print.`);
-             if (tokens.length === 1) select(tokens[0]); }
+      else {
+        const want = p.words.join(' ');
+        const exact = tokens.filter(t => t.name.toLowerCase() === want);
+        const auto = tokens.length === 1 || (exact.length === 1 && tokens[0] === exact[0]);
+        if (auto) {
+          setStatus(tokens.length === 1 ? 'Found it. Ready to print.' : `Picked ${tokens[0].name}. ${tokens.length - 1} other match${tokens.length === 2 ? '' : 'es'} below.`);
+          $('results').firstChild?.classList.add('selected');
+          select(tokens[0]);
+        } else {
+          setStatus(`${tokens.length} tokens found. Tap one to preview and print.`);
+        }
+      }
     } catch (e) {
       if (seq !== searchSeq) return;
       setStatus("Couldn't reach Scryfall. Check your connection, or make a custom token below.", true);
@@ -383,11 +419,20 @@ details summary { cursor: pointer; color: var(--muted); }
     const dw = img.width * s, dh = img.height * s;
     oc.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
     const d = oc.getImageData(0, 0, w, h), px = d.data;
-    const g = new Float32Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      let v = 0.299 * px[i*4] + 0.587 * px[i*4+1] + 0.114 * px[i*4+2];
-      v = (v - 128) * 1.25 + 140;          // a little contrast + lift, thermal prints dark
-      g[i] = v;
+    const n = w * h, g = new Float32Array(n), hist = new Uint32Array(256);
+    for (let i = 0; i < n; i++) {
+      const v = 0.299 * px[i*4] + 0.587 * px[i*4+1] + 0.114 * px[i*4+2];
+      g[i] = v; hist[v | 0]++;
+    }
+    // Auto-levels: stretch the 2nd–98th percentile to full range so light or dark art keeps detail
+    let lo = 0, hi = 255, acc = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.02) { lo = v; break; } }
+    acc = 0;
+    for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.02) { hi = v; break; } }
+    const range = Math.max(hi - lo, 1);
+    for (let i = 0; i < n; i++) {
+      let v = Math.min(1, Math.max(0, (g[i] - lo) / range));
+      g[i] = 255 * Math.pow(v, 0.85);       // slight lift of midtones; thermal heads print dark
     }
     for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
       const i = yy * w + xx, old = g[i], nv = old < 128 ? 0 : 255, err = old - nv;
@@ -401,7 +446,7 @@ details summary { cursor: pointer; color: var(--muted); }
   }
   function threshold(ctx, w, h) {
     const d = ctx.getImageData(0, 0, w, h), px = d.data;
-    for (let i = 0; i < px.length; i += 4) { const v = px[i] < 150 ? 0 : 255; px[i] = px[i+1] = px[i+2] = v; px[i+3] = 255; }
+    for (let i = 0; i < px.length; i += 4) { const v = px[i] < 128 ? 0 : 255; px[i] = px[i+1] = px[i+2] = v; px[i+3] = 255; }
     ctx.putImageData(d, 0, 0);
   }
 

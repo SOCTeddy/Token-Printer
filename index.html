@@ -70,7 +70,10 @@ button:disabled { opacity: .5; cursor: default; }
 .seg button { border: 0; border-radius: 0; }
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
 .qty { display: inline-flex; align-items: center; gap: 6px; }
-.qty output { min-width: 2ch; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
+.qty input { width: 3.5em; text-align: center; font: inherit; font-weight: 700; font-variant-numeric: tabular-nums;
+  padding: 9px 4px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); -moz-appearance: textfield; }
+.qty input::-webkit-outer-spin-button, .qty input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.qty input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .actions .primary { padding: 14px; font-size: 1.05rem; }
 .custom { display: grid; gap: 8px; grid-template-columns: 1fr 64px 64px; }
@@ -126,7 +129,7 @@ details summary { cursor: pointer; color: var(--muted); }
       </div>
       <div class="qty">
         <button type="button" id="minus" aria-label="Fewer">−</button>
-        <output id="qty">1</output>
+        <input id="qty" type="number" inputmode="numeric" min="1" max="20" value="1" aria-label="Number of copies">
         <button type="button" id="plus" aria-label="More">+</button>
       </div>
     </div>
@@ -323,7 +326,7 @@ details summary { cursor: pointer; color: var(--muted); }
     $('styleText').setAttribute('aria-pressed', s === 'text');
     draw();
   }
-  function setQty(n) { state.qty = Math.max(1, Math.min(20, n)); $('qty').textContent = state.qty; }
+  function setQty(n) { n = parseInt(n, 10); state.qty = Math.max(1, Math.min(20, isNaN(n) ? 1 : n)); $('qty').value = state.qty; }
 
   const COLOR_NAMES = {W:'White',U:'Blue',B:'Black',R:'Red',G:'Green'};
   const colorWord = c => c.length ? c.map(x => COLOR_NAMES[x] || x).join('-') : 'Colorless';
@@ -544,6 +547,10 @@ details summary { cursor: pointer; color: var(--muted); }
   $('styleText').onclick = () => setStyle('text');
   $('minus').onclick = () => setQty(state.qty - 1);
   $('plus').onclick = () => setQty(state.qty + 1);
+  $('qty').onfocus = () => $('qty').select();
+  $('qty').oninput = () => { const n = parseInt($('qty').value, 10); if (!isNaN(n)) state.qty = Math.max(1, Math.min(20, n)); };
+  $('qty').onchange = () => setQty($('qty').value);   // tidy up blanks or out-of-range numbers when you leave the box
+  $('qty').onkeydown = e => { if (e.key === 'Enter') $('qty').blur(); };
   $('print').onclick = doPrint;
   $('save').onclick = doSave;
   $('rawbt').onclick = doRawBT;

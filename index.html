@@ -29,6 +29,7 @@
   --accent: #7a5c14; --accent-ink: #ffffff; --danger: #b2402e; --paper: #fbfbf8; color-scheme: light; }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body { background: var(--bg); color: var(--fg); font: 16px/1.4 var(--font-ui);
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
@@ -74,6 +75,10 @@ button:disabled { opacity: .5; cursor: default; }
   padding: 9px 4px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); -moz-appearance: textfield; }
 .qty input::-webkit-outer-spin-button, .qty input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .qty input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.artrow { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; color: var(--muted); font-size: .9rem; }
+.artrow button { flex: 0 0 72px; padding: 0; border-radius: 6px; overflow: hidden; }
+.artrow img { width: 100%; display: block; aspect-ratio: 488/680; object-fit: cover; background: var(--line); }
+.artrow button[aria-pressed="true"] { outline: 3px solid var(--accent); outline-offset: -3px; }
 .actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .actions .primary { padding: 14px; font-size: 1.05rem; }
 .custom { display: grid; gap: 8px; grid-template-columns: 1fr 64px 64px; }
@@ -122,11 +127,13 @@ details summary { cursor: pointer; color: var(--muted); }
 
   <section class="panel" id="panel" hidden>
     <div class="preview"><canvas id="cv" width="384" height="536"></canvas></div>
+    <div class="artrow" id="artRow" hidden></div>
     <div class="row">
       <div class="seg" role="group" aria-label="Print style">
         <button type="button" id="styleArt" aria-pressed="true">Art</button>
         <button type="button" id="styleText" aria-pressed="false">Text</button>
       </div>
+      <button type="button" id="moreArt">Other art</button>
       <div class="qty">
         <button type="button" id="minus" aria-label="Fewer">−</button>
         <input id="qty" type="number" inputmode="numeric" min="1" max="20" value="1" aria-label="Number of copies">
@@ -304,20 +311,64 @@ details summary { cursor: pointer; color: var(--muted); }
   }
 
   // ---------- selection & preview ----------
+  // Same token = same name and P/T (wording of reminder text varies between printings)
+  const artKey = t => [t.name, t.p, t.t].join('|');
+
+  function loadArt(tok) {
+    state.artImg = null;
+    if (!tok.art) return;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { if (state.token === tok) { state.artImg = img; draw(); } };
+    img.onerror = () => { if (state.token === tok) { $('styleArt').disabled = true; setStyle('text'); } };
+    img.src = tok.art;
+  }
+
   function select(tok) {
+    tok = { ...tok };
+    const saved = store.get('art', {})[artKey(tok)];
+    if (saved) { tok.art = saved.art; tok.thumb = saved.thumb; }
     state.token = tok; state.artImg = null;
     $('panel').hidden = false;
+    $('artRow').hidden = true; $('artRow').innerHTML = '';
+    $('moreArt').hidden = !tok.art;
     setStyle(tok.art ? state.style : 'text');
     $('styleArt').disabled = !tok.art;
-    if (tok.art) {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => { if (state.token === tok) { state.artImg = img; draw(); } };
-      img.onerror = () => { if (state.token === tok) { $('styleArt').disabled = true; setStyle('text'); } };
-      img.src = tok.art;
-    }
+    loadArt(tok);
     draw();
     $('panel').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }
+
+  async function showArts() {
+    const tok = state.token; if (!tok) return;
+    const row = $('artRow');
+    if (!row.hidden && row.querySelector('button')) { row.hidden = true; return; }   // tap again to close
+    row.hidden = false; row.textContent = 'Loading art…';
+    const q = ['t:token', `name:"${tok.name.replace(/"/g, '')}"`];
+    if (tok.p != null) q.push('pow=' + tok.p);
+    if (tok.t != null) q.push('tou=' + tok.t);
+    try {
+      const r = await fetch('https://api.scryfall.com/cards/search?unique=art&order=released&dir=desc&q=' + encodeURIComponent(q.join(' ')));
+      const j = r.ok ? await r.json() : { data: [] };
+      if (state.token !== tok) return;
+      const seen = new Set();
+      const arts = (j.data || []).flatMap(faces)
+        .filter(f => artKey(f) === artKey(tok) && f.art && !seen.has(f.art) && seen.add(f.art));
+      row.innerHTML = '';
+      if (arts.length <= 1) { row.textContent = 'This is the only art Scryfall has for this token.'; return; }
+      arts.forEach(a => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.setAttribute('aria-pressed', a.art === tok.art); b.setAttribute('aria-label', 'Use this art');
+        b.innerHTML = '<img alt="" loading="lazy">'; b.querySelector('img').src = a.thumb;
+        b.onclick = () => {
+          tok.art = a.art; tok.thumb = a.thumb;
+          const m = store.get('art', {}); m[artKey(tok)] = { art: a.art, thumb: a.thumb }; store.set('art', m);
+          row.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+          setStyle('art'); loadArt(tok);
+        };
+        row.appendChild(b);
+      });
+    } catch { if (state.token === tok) row.textContent = "Couldn't load other art. Check your connection."; }
   }
 
   function setStyle(s) {
@@ -566,6 +617,7 @@ details summary { cursor: pointer; color: var(--muted); }
   $('print').onclick = doPrint;
   $('save').onclick = doSave;
   $('rawbt').onclick = doRawBT;
+  $('moreArt').onclick = showArts;
   $('cMake').onclick = () => {
     const name = $('cName').value.trim() || 'Token';
     const p = $('cP').value.trim(), t = $('cT').value.trim();

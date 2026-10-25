@@ -361,18 +361,30 @@ details summary { cursor: pointer; color: var(--muted); }
       ctx.fillStyle = '#000';
       ctx.font = font(F, 32); ctx.textBaseline = 'top';
       ctx.fillText(fit(ctx, tok.name, W - 24), 12, 12);
-      ctx.font = font(R, 18); ctx.fillText(fit(ctx, typeLine, W - 24), 12, 50);
-      // art
-      const ax = 8, ay = 78, aw = W - 16, ah = 270;
+      ctx.font = font(F, 18); ctx.fillText(fit(ctx, typeLine, W - 24), 12, 50);   // bold so it survives thermal printing
+      // rules text first, so the art can take whatever height is left
+      ctx.font = font(R, 20);
+      const lines = tok.text ? wrap(ctx, tok.text, W - 24).slice(0, 6) : [];
+      const LH = 24;
+      const textH = lines.length ? lines.length * LH + 12 : 0;
+      const ptReserve = hasPT && lines.length ? 58 : 0;       // P/T sits under the text when there is text
+      const ax = 8, ay = 78, aw = W - 16;
+      const ah = Math.max(200, H_ART - 10 - ay - textH - ptReserve);
       drawDithered(ctx, artImg, ax, ay, aw, ah);
       ctx.lineWidth = 3; ctx.strokeRect(ax, ay, aw, ah);
-      // rules text
-      ctx.font = font(R, 20);
-      const lines = wrap(ctx, tok.text, W - 24 - (hasPT ? 0 : 0));
       let y = ay + ah + 12;
-      const maxY = H_ART - (hasPT ? 70 : 16);
-      for (const ln of lines) { if (y + 22 > maxY) break; ctx.fillText(ln, 12, y); y += 24; }
-      if (hasPT) ptBox(ctx, `${tok.p}/${tok.t}`, W - 12, H_ART - 12, 40);
+      for (const ln of lines) { ctx.fillText(ln, 12, y); y += LH; }
+      if (hasPT) {
+        if (lines.length) ptBox(ctx, `${tok.p}/${tok.t}`, W - 12, H_ART - 12, 40);
+        else {
+          // no rules text: art runs to the bottom and the P/T sits on its corner with a white outline
+          ctx.font = 'bold 40px system-ui, Roboto, Arial, sans-serif';
+          const txt = `${tok.p}/${tok.t}`, tw = ctx.measureText(txt).width, pad = 12;
+          const bw = tw + pad * 2, bh = 40 + pad * 1.4, bx = W - 14 - bw, by = ay + ah - 6 - bh;
+          ctx.fillStyle = '#fff'; roundRect(ctx, bx - 4, by - 4, bw + 8, bh + 8, 12); ctx.fill(); ctx.fillStyle = '#000';
+          ptBox(ctx, txt, bx + bw, by + bh, 40);
+        }
+      }
       ctx.lineWidth = 4; roundRect(ctx, 2, 2, W - 4, H_ART - 4, 14); ctx.stroke();
     } else {
       // text style: height grows with content

@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16201c">
+<title>Token Printer</title>
+<style>
+/* Layout: one phone-width column — search, quick picks, results grid, then a sticky print panel. */
+:root {
+  --bg: #16201c;        /* table felt */
+  --surface: #1f2b26;
+  --line: #34443d;
+  --fg: #e8ece9;
+  --muted: #9aaba3;
+  --accent: #c9a24a;    /* brass */
+  --accent-ink: #1a1408;
+  --danger: #e27a6a;
+  --paper: #fbfbf8;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Georgia", "Times New Roman", serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg: #e9eeeb; --surface: #ffffff; --line: #c9d3ce; --fg: #18231e; --muted: #56665e;
+  --accent: #7a5c14; --accent-ink: #ffffff; --danger: #b2402e; --paper: #fbfbf8; color-scheme: light; } }
+:root[data-theme="light"] {
+  --bg: #e9eeeb; --surface: #ffffff; --line: #c9d3ce; --fg: #18231e; --muted: #56665e;
+  --accent: #7a5c14; --accent-ink: #ffffff; --danger: #b2402e; --paper: #fbfbf8; color-scheme: light; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.4 var(--font-ui);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: calc(12px + env(safe-area-inset-top, 0px)) calc(24px + env(safe-area-inset-bottom, 0px)); }
+.wrap { max-width: 640px; margin: 0 auto; display: grid; gap: 14px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+h1 { font: 700 1.5rem/1.1 var(--font-display); margin: 0; letter-spacing: .01em; }
+.hint { color: var(--muted); font-size: .85rem; }
+
+.search { display: flex; gap: 8px; }
+.search input { flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--fg); }
+.search input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--fg); padding: 10px 14px; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+button:disabled { opacity: .5; cursor: default; }
+#mic { width: 52px; padding: 0; font-size: 1.3rem; }
+#mic.listening { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { padding: 6px 12px; border-radius: 999px; font-size: .9rem; }
+.label { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 6px; }
+
+#status { min-height: 1.4em; color: var(--muted); font-size: .9rem; }
+#status.err { color: var(--danger); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; }
+.result { padding: 0; overflow: hidden; display: grid; text-align: left; border-radius: 8px; }
+.result img { width: 100%; aspect-ratio: 488/680; object-fit: cover; display: block; background: var(--line); }
+.result span { padding: 6px 8px; font-size: .8rem; line-height: 1.2; }
+.result.selected { outline: 3px solid var(--accent); }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 12px; }
+.preview { background: var(--paper); border-radius: 6px; padding: 10px; display: flex; justify-content: center; }
+.preview canvas { width: 100%; max-width: 288px; height: auto; image-rendering: pixelated; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.qty { display: inline-flex; align-items: center; gap: 6px; }
+.qty output { min-width: 2ch; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
+.actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.actions .primary { padding: 14px; font-size: 1.05rem; }
+.custom { display: grid; gap: 8px; grid-template-columns: 1fr 64px 64px; }
+.custom input, .custom textarea { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--fg); min-width: 0; }
+.custom textarea { grid-column: 1 / -1; min-height: 60px; resize: vertical; }
+.custom button { grid-column: 1 / -1; }
+details summary { cursor: pointer; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Token Printer</h1>
+    <span class="hint">58mm · 384 dots</span>
+  </header>
+
+  <form class="search" id="searchForm">
+    <input id="q" type="search" placeholder="2/2 zombie, treasure, 1/1 white soldier…" autocomplete="off" enterkeyhint="search">
+    <button id="mic" type="button" aria-label="Say a token">🎙</button>
+  </form>
+
+  <div>
+    <div class="label">Quick picks</div>
+    <div class="chips" id="quick"></div>
+  </div>
+  <div id="recentWrap" hidden>
+    <div class="label">Recently printed</div>
+    <div class="chips" id="recent"></div>
+  </div>
+
+  <div id="status" role="status"></div>
+  <div class="grid" id="results"></div>
+
+  <details>
+    <summary>Make a custom token</summary>
+    <div class="custom" style="margin-top:10px">
+      <input id="cName" placeholder="Name (e.g. Copy of Grolnok)">
+      <input id="cP" placeholder="P" inputmode="numeric">
+      <input id="cT" placeholder="T" inputmode="numeric">
+      <input id="cType" placeholder="Type line (e.g. Creature — Frog)" style="grid-column:1/-1">
+      <textarea id="cText" placeholder="Abilities"></textarea>
+      <button type="button" id="cMake">Use custom token</button>
+    </div>
+  </details>
+
+  <section class="panel" id="panel" hidden>
+    <div class="preview"><canvas id="cv" width="384" height="536"></canvas></div>
+    <div class="row">
+      <div class="seg" role="group" aria-label="Print style">
+        <button type="button" id="styleArt" aria-pressed="true">Art</button>
+        <button type="button" id="styleText" aria-pressed="false">Text</button>
+      </div>
+      <div class="qty">
+        <button type="button" id="minus" aria-label="Fewer">−</button>
+        <output id="qty">1</output>
+        <button type="button" id="plus" aria-label="More">+</button>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" class="primary" id="print">Print</button>
+      <button type="button" id="save">Save image</button>
+    </div>
+    <button type="button" id="rawbt">Send straight to RawBT (experimental)</button>
+  </section>
+</div>
+
+<script>
+(() => {
+  const W = 384;                 // printable dots on 58mm paper (48mm × 8 dots/mm)
+  const H_ART = 536;             // keeps a real card's 63×88 proportions
+  const $ = id => document.getElementById(id);
+  const state = { token: null, style: 'art', qty: 1, artImg: null };
+
+  // ---------- storage (best effort) ----------
+  const store = {
+    get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  };
+
+  // ---------- natural-language → Scryfall query ----------
+  const NUM = {zero:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12};
+  const COLORS = {white:'w',blue:'u',black:'b',red:'r',green:'g'};
+  const KEYWORDS = ['flying','vigilance','lifelink','deathtouch','haste','trample','reach','menace','defender',
+    'indestructible','hexproof','prowess','ward','first_strike','double_strike'];
+  const STOP = new Set(['a','an','the','token','tokens','creature','creatures','with','and','i','need','print','me',
+    'give','make','of','please','times','copies','copy','get','want','some','by','for','that','has']);
+  const IRREG = {elves:'elf', wolves:'wolf', dwarves:'dwarf', mice:'mouse', octopi:'octopus'};
+
+  function singular(w) {
+    if (IRREG[w]) return IRREG[w];
+    if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
+    if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+    return w;
+  }
+
+  function parse(raw) {
+    let s = ' ' + raw.toLowerCase() + ' ';
+    s = s.replace(/first strike/g, 'first_strike').replace(/double strike/g, 'double_strike');
+    s = s.replace(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/g, m => NUM[m]);
+    const out = { qty: null, p: null, t: null, colors: [], colorless: false, kw: [], words: [] };
+    const slash = s.match(/(\d+|x)\s*\/\s*(\d+|x)/);
+    let nums;
+    if (slash) {
+      out.p = slash[1]; out.t = slash[2];
+      s = s.replace(slash[0], ' ');
+      nums = s.match(/\d+/g) || [];
+      if (nums.length) out.qty = +nums[0];
+    } else {
+      nums = s.match(/\d+/g) || [];
+      if (nums.length >= 3) { out.qty = +nums[0]; out.p = nums[1]; out.t = nums[2]; }
+      else if (nums.length === 2) { out.p = nums[0]; out.t = nums[1]; }
+      else if (nums.length === 1) { out.qty = +nums[0]; }
+    }
+    s = s.replace(/\d+/g, ' ');
+    for (const w of s.split(/[^a-z_]+/).filter(Boolean)) {
+      if (STOP.has(w)) continue;
+      if (COLORS[w]) { out.colors.push(COLORS[w]); continue; }
+      if (w === 'colorless') { out.colorless = true; continue; }
+      if (KEYWORDS.includes(w)) { out.kw.push(w.replace('_', ' ')); continue; }
+      out.words.push(singular(w));
+    }
+    return out;
+  }
+
+  function toQuery(p, typed) {
+    const q = ['t:token'];
+    if (p.p != null) q.push('pow=' + p.p);
+    if (p.t != null) q.push('tou=' + p.t);
+    if (p.colors.length) q.push('c=' + p.colors.join(''));
+    if (p.colorless) q.push('c=c');
+    for (const k of p.kw) q.push(`o:"${k}"`);
+    for (const w of p.words) q.push(typed ? 't:' + w : w);
+    return q.join(' ');
+  }
+
+  // ---------- Scryfall ----------
+  async function scryfall(q) {
+    const url = 'https://api.scryfall.com/cards/search?unique=cards&order=name&q=' + encodeURIComponent(q);
+    const r = await fetch(url);
+    if (r.status === 404) return [];
+    if (!r.ok) throw new Error('Scryfall returned ' + r.status);
+    const j = await r.json();
+    return j.data || [];
+  }
+
+  function norm(c) {
+    const f = (!c.image_uris && c.card_faces) ? c.card_faces[0] : c;
+    const im = f.image_uris || c.image_uris || {};
+    return { name: f.name, type: f.type_line || c.type_line || '', text: f.oracle_text || '',
+      p: f.power ?? null, t: f.toughness ?? null, colors: c.colors || f.colors || [],
+      thumb: im.small || im.normal || '', art: im.art_crop || '' };
+  }
+
+  let searchSeq = 0;
+  async function search(raw) {
+    raw = raw.trim();
+    if (!raw) return;
+    const seq = ++searchSeq;
+    const p = parse(raw);
+    if (p.qty) setQty(Math.min(p.qty, 20));
+    setStatus('Searching…');
+    try {
+      let cards = await scryfall(toQuery(p, true));
+      if (!cards.length && p.words.length) cards = await scryfall(toQuery(p, false)); // names like "Marit Lage"
+      if (seq !== searchSeq) return;
+      const tokens = cards.map(norm);
+      renderResults(tokens);
+      if (!tokens.length) setStatus(`No tokens matched "${raw}". Try fewer words, or make a custom token below.`, true);
+      else { setStatus(tokens.length === 1 ? '1 token found.' : `${tokens.length} tokens found. Tap one to print.`);
+             if (tokens.length === 1) select(tokens[0]); }
+    } catch (e) {
+      if (seq !== searchSeq) return;
+      setStatus("Couldn't reach Scryfall. Check your connection, or make a custom token below.", true);
+    }
+  }
+
+  function setStatus(msg, err) { const el = $('status'); el.textContent = msg; el.className = err ? 'err' : ''; }
+
+  function renderResults(list) {
+    const g = $('results'); g.innerHTML = '';
+    list.slice(0, 60).forEach(tok => {
+      const b = document.createElement('button');
+      b.className = 'result'; b.type = 'button';
+      b.innerHTML = `<img loading="lazy" alt=""><span></span>`;
+      b.querySelector('img').src = tok.thumb;
+      b.querySelector('span').textContent = (tok.p != null ? `${tok.p}/${tok.t} ` : '') + tok.name;
+      b.onclick = () => { document.querySelectorAll('.result.selected').forEach(x => x.classList.remove('selected'));
+                          b.classList.add('selected'); select(tok); };
+      g.appendChild(b);
+    });
+  }
+
+  // ---------- selection & preview ----------
+  function select(tok) {
+    state.token = tok; state.artImg = null;
+    $('panel').hidden = false;
+    setStyle(tok.art ? state.style : 'text');
+    $('styleArt').disabled = !tok.art;
+    if (tok.art) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => { if (state.token === tok) { state.artImg = img; draw(); } };
+      img.onerror = () => { if (state.token === tok) { $('styleArt').disabled = true; setStyle('text'); } };
+      img.src = tok.art;
+    }
+    draw();
+    $('panel').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }
+
+  function setStyle(s) {
+    state.style = s;
+    $('styleArt').setAttribute('aria-pressed', s === 'art');
+    $('styleText').setAttribute('aria-pressed', s === 'text');
+    draw();
+  }
+  function setQty(n) { state.qty = Math.max(1, Math.min(20, n)); $('qty').textContent = state.qty; }
+
+  const COLOR_NAMES = {W:'White',U:'Blue',B:'Black',R:'Red',G:'Green'};
+  const colorWord = c => c.length ? c.map(x => COLOR_NAMES[x] || x).join('-') : 'Colorless';
+
+  function wrap(ctx, text, maxW) {
+    const lines = [];
+    for (const para of String(text).split('\n')) {
+      let line = '';
+      for (const word of para.split(' ')) {
+        const test = line ? line + ' ' + word : word;
+        if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = word; }
+        else line = test;
+      }
+      lines.push(line);
+    }
+    return lines;
+  }
+
+  // Render one token onto a fresh canvas (pure black/white, 384 wide)
+  function renderToken(tok, style, artImg) {
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    const F = 'bold {s}px system-ui, Roboto, Arial, sans-serif';
+    const R = '{s}px system-ui, Roboto, Arial, sans-serif';
+    const font = (tpl, s) => tpl.replace('{s}', s);
+    const hasPT = tok.p != null && tok.t != null;
+    const typeLine = `${colorWord(tok.colors)} · ${tok.type.replace(/^Token\s+/, '')}`;
+
+    if (style === 'art' && artImg) {
+      c.width = W; c.height = H_ART;
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H_ART);
+      ctx.fillStyle = '#000';
+      ctx.font = font(F, 32); ctx.textBaseline = 'top';
+      ctx.fillText(fit(ctx, tok.name, W - 24), 12, 12);
+      ctx.font = font(R, 18); ctx.fillText(fit(ctx, typeLine, W - 24), 12, 50);
+      // art
+      const ax = 8, ay = 78, aw = W - 16, ah = 270;
+      drawDithered(ctx, artImg, ax, ay, aw, ah);
+      ctx.lineWidth = 3; ctx.strokeRect(ax, ay, aw, ah);
+      // rules text
+      ctx.font = font(R, 20);
+      const lines = wrap(ctx, tok.text, W - 24 - (hasPT ? 0 : 0));
+      let y = ay + ah + 12;
+      const maxY = H_ART - (hasPT ? 70 : 16);
+      for (const ln of lines) { if (y + 22 > maxY) break; ctx.fillText(ln, 12, y); y += 24; }
+      if (hasPT) ptBox(ctx, `${tok.p}/${tok.t}`, W - 12, H_ART - 12, 40);
+      ctx.lineWidth = 4; roundRect(ctx, 2, 2, W - 4, H_ART - 4, 14); ctx.stroke();
+    } else {
+      // text style: height grows with content
+      const meas = document.createElement('canvas').getContext('2d');
+      meas.font = font(F, 52); const nameLines = wrap(meas, tok.name, W - 32);
+      meas.font = font(R, 22); const typeLines = wrap(meas, typeLine, W - 32);
+      meas.font = font(R, 26); const textLines = tok.text ? wrap(meas, tok.text, W - 32) : [];
+      const h = 20 + nameLines.length * 58 + 8 + typeLines.length * 28 + 14 + textLines.length * 32 + (hasPT ? 110 : 20) + 10;
+      c.width = W; c.height = Math.max(h, 260);
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, c.height);
+      ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
+      let y = 20;
+      ctx.font = font(F, 52); nameLines.forEach(l => { ctx.fillText(l, 16, y); y += 58; });
+      y += 8; ctx.font = font(R, 22); typeLines.forEach(l => { ctx.fillText(l, 16, y); y += 28; });
+      y += 6; ctx.fillRect(16, y, W - 32, 3); y += 12;
+      ctx.font = font(R, 26); textLines.forEach(l => { ctx.fillText(l, 16, y); y += 32; });
+      if (hasPT) ptBox(ctx, `${tok.p}/${tok.t}`, W - 16, c.height - 16, 72);
+      ctx.lineWidth = 4; roundRect(ctx, 2, 2, W - 4, c.height - 4, 14); ctx.stroke();
+    }
+    threshold(ctx, c.width, c.height);
+    return c;
+  }
+
+  function fit(ctx, text, maxW) {
+    if (ctx.measureText(text).width <= maxW) return text;
+    while (text.length > 1 && ctx.measureText(text + '…').width > maxW) text = text.slice(0, -1);
+    return text + '…';
+  }
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  function ptBox(ctx, txt, right, bottom, size) {
+    ctx.font = `bold ${size}px system-ui, Roboto, Arial, sans-serif`;
+    const tw = ctx.measureText(txt).width, pad = size * 0.3;
+    const bw = tw + pad * 2, bh = size + pad * 1.2;
+    ctx.fillStyle = '#000'; roundRect(ctx, right - bw, bottom - bh, bw, bh, 10); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.textBaseline = 'top'; ctx.fillText(txt, right - bw + pad, bottom - bh + pad * 0.6);
+    ctx.fillStyle = '#000';
+  }
+
+  // Cover-fit the art, then Floyd–Steinberg dither it to 1-bit like the print head will
+  function drawDithered(ctx, img, x, y, w, h) {
+    const o = document.createElement('canvas'); o.width = w; o.height = h;
+    const oc = o.getContext('2d');
+    const s = Math.max(w / img.width, h / img.height);
+    const dw = img.width * s, dh = img.height * s;
+    oc.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    const d = oc.getImageData(0, 0, w, h), px = d.data;
+    const g = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      let v = 0.299 * px[i*4] + 0.587 * px[i*4+1] + 0.114 * px[i*4+2];
+      v = (v - 128) * 1.25 + 140;          // a little contrast + lift, thermal prints dark
+      g[i] = v;
+    }
+    for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
+      const i = yy * w + xx, old = g[i], nv = old < 128 ? 0 : 255, err = old - nv;
+      g[i] = nv;
+      if (xx + 1 < w) g[i + 1] += err * 7 / 16;
+      if (yy + 1 < h) { if (xx > 0) g[i + w - 1] += err * 3 / 16; g[i + w] += err * 5 / 16; if (xx + 1 < w) g[i + w + 1] += err / 16; }
+    }
+    for (let i = 0; i < w * h; i++) { px[i*4] = px[i*4+1] = px[i*4+2] = g[i]; px[i*4+3] = 255; }
+    oc.putImageData(d, 0, 0);
+    ctx.drawImage(o, x, y);
+  }
+  function threshold(ctx, w, h) {
+    const d = ctx.getImageData(0, 0, w, h), px = d.data;
+    for (let i = 0; i < px.length; i += 4) { const v = px[i] < 150 ? 0 : 255; px[i] = px[i+1] = px[i+2] = v; px[i+3] = 255; }
+    ctx.putImageData(d, 0, 0);
+  }
+
+  function draw() {
+    if (!state.token) return;
+    const style = state.style === 'art' && state.artImg ? 'art' : 'text';
+    let src;
+    try { src = renderToken(state.token, style, state.artImg); }
+    catch { $('styleArt').disabled = true; src = renderToken(state.token, 'text', null); }
+    const cv = $('cv'); cv.width = src.width; cv.height = src.height;
+    cv.getContext('2d').drawImage(src, 0, 0);
+  }
+
+  // Stack N copies with a dashed cut line between them
+  function sheet() {
+    const one = $('cv'), gap = 40, n = state.qty;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = one.height * n + gap * (n - 1) + 60;  // trailing feed so the last token clears the tear bar
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    for (let i = 0; i < n; i++) {
+      const y = i * (one.height + gap);
+      ctx.drawImage(one, 0, y);
+      if (i < n - 1) { ctx.fillStyle = '#000'; for (let x = 0; x < W; x += 16) ctx.fillRect(x, y + one.height + gap / 2, 8, 2); }
+    }
+    return c;
+  }
+
+  function remember() {
+    const t = state.token; if (!t) return;
+    let rec = store.get('recent', []).filter(r => !(r.name === t.name && r.p === t.p && r.t === t.t && r.text === t.text));
+    rec.unshift(t); rec = rec.slice(0, 8); store.set('recent', rec); renderRecent();
+  }
+  function renderRecent() {
+    const rec = store.get('recent', []);
+    $('recentWrap').hidden = !rec.length;
+    const box = $('recent'); box.innerHTML = '';
+    rec.forEach(t => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip';
+      b.textContent = (t.p != null ? `${t.p}/${t.t} ` : '') + t.name; b.onclick = () => select(t); box.appendChild(b); });
+  }
+
+  const toBlob = c => new Promise(res => c.toBlob(res, 'image/png'));
+  const fileName = () => (state.token.name || 'token').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.png';
+
+  async function doPrint() {
+    const blob = await toBlob(sheet());
+    const file = new File([blob], fileName(), { type: 'image/png' });
+    remember();
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: state.token.name }); setStatus('Pick RawBT in the share sheet to print.'); }
+      catch (e) { if (e.name !== 'AbortError') setStatus('Sharing failed. Use "Save image" and print it from RawBT.', true); }
+    } else {
+      setStatus("This browser can't share images. Use \"Save image\", or try the RawBT button.", true);
+    }
+  }
+  async function doSave() {
+    const blob = await toBlob(sheet());
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName();
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    remember();
+  }
+  function doRawBT() {
+    const data = sheet().toDataURL('image/png');
+    remember();
+    location.href = 'intent:' + data + '#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;';
+  }
+
+  // ---------- voice ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  if (!SR) { $('mic').disabled = true; $('mic').title = 'Voice needs Chrome on Android over https'; }
+  $('mic').onclick = () => {
+    if (!SR) return;
+    if (rec) { rec.stop(); return; }
+    rec = new SR(); rec.lang = 'en-US'; rec.interimResults = true; rec.maxAlternatives = 1;
+    $('mic').classList.add('listening'); setStatus('Listening… say something like "three one one soldiers".');
+    rec.onresult = e => {
+      const r = e.results[e.results.length - 1]; $('q').value = r[0].transcript;
+      if (r.isFinal) search(r[0].transcript);
+    };
+    rec.onerror = e => setStatus(e.error === 'not-allowed' ? 'Microphone permission was denied. Allow it in Chrome site settings.' : 'Didn\'t catch that. Tap the mic and try again.', true);
+    rec.onend = () => { $('mic').classList.remove('listening'); rec = null; };
+    rec.start();
+  };
+
+  // ---------- wiring ----------
+  const QUICK = ['Treasure', 'Clue', 'Food', 'Blood', '1/1 white soldier', '2/2 black zombie', '1/1 green saproling', '1/1 white spirit flying'];
+  QUICK.forEach(q => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = q;
+    b.onclick = () => { $('q').value = q; setQty(1); search(q); }; $('quick').appendChild(b); });
+
+  let deb;
+  $('searchForm').onsubmit = e => { e.preventDefault(); clearTimeout(deb); setQty(1); search($('q').value); };
+  $('q').oninput = () => { clearTimeout(deb); const v = $('q').value; if (v.trim().length >= 3) deb = setTimeout(() => search(v), 450); };
+  $('styleArt').onclick = () => setStyle('art');
+  $('styleText').onclick = () => setStyle('text');
+  $('minus').onclick = () => setQty(state.qty - 1);
+  $('plus').onclick = () => setQty(state.qty + 1);
+  $('print').onclick = doPrint;
+  $('save').onclick = doSave;
+  $('rawbt').onclick = doRawBT;
+  $('cMake').onclick = () => {
+    const name = $('cName').value.trim() || 'Token';
+    const p = $('cP').value.trim(), t = $('cT').value.trim();
+    select({ name, type: $('cType').value.trim() || 'Creature', text: $('cText').value.trim(),
+      p: p || null, t: t || null, colors: [], thumb: '', art: '' });
+  };
+
+  renderRecent();
+  // Open in a working state
+  $('q').value = '1/1 white soldier';
+  search('1/1 white soldier');
+})();
+</script>
+</body>
+</html>

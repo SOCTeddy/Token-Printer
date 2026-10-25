@@ -79,6 +79,10 @@ button:disabled { opacity: .5; cursor: default; }
 .artrow button { flex: 0 0 72px; padding: 0; border-radius: 6px; overflow: hidden; }
 .artrow img { width: 100%; display: block; aspect-ratio: 488/680; object-fit: cover; background: var(--line); }
 .artrow button[aria-pressed="true"] { outline: 3px solid var(--accent); outline-offset: -3px; }
+.adj { display: grid; grid-template-columns: auto 1fr 3ch; gap: 6px 10px; align-items: center; font-size: .9rem; color: var(--muted); }
+.adj input[type="range"] { width: 100%; min-width: 0; accent-color: var(--accent); }
+.adj output { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
+.adj button { grid-column: 1 / -1; justify-self: start; padding: 6px 12px; font-size: .85rem; }
 .actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .actions .primary { padding: 14px; font-size: 1.05rem; }
 .custom { display: grid; gap: 8px; grid-template-columns: 1fr 64px 64px; }
@@ -128,6 +132,15 @@ details summary { cursor: pointer; color: var(--muted); }
   <section class="panel" id="panel" hidden>
     <div class="preview"><canvas id="cv" width="384" height="536"></canvas></div>
     <div class="artrow" id="artRow" hidden></div>
+    <div class="adj" id="adj">
+      <label for="bright">Brightness</label>
+      <input id="bright" type="range" min="-50" max="50" step="1" value="0">
+      <output id="brightVal">0</output>
+      <label for="contrast">Contrast</label>
+      <input id="contrast" type="range" min="-50" max="50" step="1" value="0">
+      <output id="contrastVal">0</output>
+      <button type="button" id="adjReset">Reset</button>
+    </div>
     <div class="row">
       <div class="seg" role="group" aria-label="Print style">
         <button type="button" id="styleArt" aria-pressed="true">Art</button>
@@ -153,7 +166,7 @@ details summary { cursor: pointer; color: var(--muted); }
   const W = 384;                 // printable dots on 58mm paper (48mm × 8 dots/mm)
   const H_ART = 536;             // keeps a real card's 63×88 proportions
   const $ = id => document.getElementById(id);
-  const state = { token: null, style: 'art', qty: 1, artImg: null };
+  const state = { token: null, style: 'art', qty: 1, artImg: null, adj: { bright: 0, contrast: 0 } };
 
   // ---------- storage (best effort) ----------
   const store = {
@@ -375,6 +388,7 @@ details summary { cursor: pointer; color: var(--muted); }
     state.style = s;
     $('styleArt').setAttribute('aria-pressed', s === 'art');
     $('styleText').setAttribute('aria-pressed', s === 'text');
+    $('adj').hidden = s !== 'art';
     draw();
   }
   function setQty(n) { n = parseInt(n, 10); state.qty = Math.max(1, Math.min(20, isNaN(n) ? 1 : n)); $('qty').value = state.qty; }
@@ -496,8 +510,11 @@ details summary { cursor: pointer; color: var(--muted); }
     acc = 0;
     for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.02) { hi = v; break; } }
     const range = Math.max(hi - lo, 1);
+    const cf = 1 + state.adj.contrast / 50;      // 0 … 2
+    const bo = state.adj.bright / 100;           // −0.5 … +0.5
     for (let i = 0; i < n; i++) {
       let v = Math.min(1, Math.max(0, (g[i] - lo) / range));
+      v = Math.min(1, Math.max(0, (v - 0.5) * cf + 0.5 + bo));
       g[i] = 255 * Math.pow(v, 0.85);       // slight lift of midtones; thermal heads print dark
     }
     for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
@@ -618,6 +635,24 @@ details summary { cursor: pointer; color: var(--muted); }
   $('save').onclick = doSave;
   $('rawbt').onclick = doRawBT;
   $('moreArt').onclick = showArts;
+
+  // Brightness / contrast — saved per phone, since they're really about this printer
+  function showAdj() {
+    $('bright').value = state.adj.bright; $('brightVal').textContent = state.adj.bright;
+    $('contrast').value = state.adj.contrast; $('contrastVal').textContent = state.adj.contrast;
+  }
+  let adjFrame = 0;
+  function onAdj() {
+    state.adj = { bright: +$('bright').value, contrast: +$('contrast').value };
+    $('brightVal').textContent = state.adj.bright; $('contrastVal').textContent = state.adj.contrast;
+    store.set('adj', state.adj);
+    cancelAnimationFrame(adjFrame); adjFrame = requestAnimationFrame(draw);
+  }
+  $('bright').oninput = onAdj;
+  $('contrast').oninput = onAdj;
+  $('adjReset').onclick = () => { state.adj = { bright: 0, contrast: 0 }; store.set('adj', state.adj); showAdj(); draw(); };
+  state.adj = Object.assign({ bright: 0, contrast: 0 }, store.get('adj', {}));
+  showAdj();
   $('cMake').onclick = () => {
     const name = $('cName').value.trim() || 'Token';
     const p = $('cP').value.trim(), t = $('cT').value.trim();

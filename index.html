@@ -52,6 +52,10 @@ button:disabled { opacity: .5; cursor: default; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { padding: 6px 12px; border-radius: 999px; font-size: .9rem; }
+.chip.learned { border-color: var(--accent); }
+.labelrow { display: flex; align-items: center; justify-content: space-between; }
+.linkbtn { border: 0; background: none; padding: 2px 4px; color: var(--muted); font-size: .72rem;
+  text-transform: uppercase; letter-spacing: .08em; text-decoration: underline; }
 .label { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 6px; }
 
 #status { min-height: 1.4em; color: var(--muted); font-size: .9rem; }
@@ -128,7 +132,7 @@ details summary { cursor: pointer; color: var(--muted); }
   </form>
 
   <div>
-    <div class="label">Quick picks</div>
+    <div class="label labelrow">Quick picks <button type="button" class="linkbtn" id="resetPicks" hidden>Reset</button></div>
     <div class="chips" id="quick"></div>
   </div>
   <label class="toggle" id="autoWrap" hidden>
@@ -661,6 +665,10 @@ details summary { cursor: pointer; color: var(--muted); }
     const t = state.token; if (!t) return;
     let rec = store.get('recent', []).filter(r => !(r.name === t.name && r.p === t.p && r.t === t.t && r.text === t.text));
     rec.unshift(t); rec = rec.slice(0, 8); store.set('recent', rec); renderRecent();
+    // Tally prints per token (same name + P/T) so the most-used ones become quick picks
+    const counts = store.get('counts', {}), k = artKey(t);
+    counts[k] = { token: t, n: (counts[k]?.n || 0) + 1, last: Date.now() };
+    store.set('counts', counts); renderQuick();
   }
   function renderRecent() {
     const rec = store.get('recent', []);
@@ -868,8 +876,41 @@ details summary { cursor: pointer; color: var(--muted); }
 
   // ---------- wiring ----------
   const QUICK = ['Treasure', 'Clue', 'Food', 'Blood', '1/1 white soldier', '2/2 black zombie', '1/1 green saproling', '1/1 white spirit flying'];
-  QUICK.forEach(q => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = q;
-    b.onclick = () => { $('q').value = q; setQty(1); search(q); }; $('quick').appendChild(b); });
+  const QUICK_SLOTS = 8;
+  const chipLabel = t => (t.p != null ? `${t.p}/${t.t} ` : '') + t.name;
+  // Most-printed tokens first (ties → most recent), then the defaults to fill the rest
+  function renderQuick() {
+    const learned = Object.values(store.get('counts', {}))
+      .sort((a, b) => b.n - a.n || b.last - a.last).slice(0, QUICK_SLOTS).map(e => e.token);
+    const box = $('quick'); box.innerHTML = '';
+    learned.forEach(t => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'chip learned';
+      b.textContent = chipLabel(t);
+      b.onclick = () => { cancelCountdown(); $('q').value = chipLabel(t); setQty(1);
+        searchSeq++; renderResults([]); setStatus('Ready to print.'); select(t); };
+      box.appendChild(b);
+    });
+    const taken = t => learned.some(l => {                 // skip a default that's already a learned pick
+      const p = parse(t);
+      return l.name.toLowerCase() === p.words.join(' ') && (p.p == null || (String(l.p) === p.p && String(l.t) === p.t));
+    });
+    QUICK.filter(q => !taken(q)).slice(0, QUICK_SLOTS - learned.length).forEach(q => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = q;
+      b.onclick = () => { $('q').value = q; setQty(1); search(q); }; box.appendChild(b);
+    });
+    $('resetPicks').hidden = !learned.length;
+  }
+  // First run with this feature: count what's already in "Recently printed" once each
+  if (store.get('counts', null) === null) {
+    const now = Date.now(), seed = {};
+    store.get('recent', []).forEach((t, i) => { seed[artKey(t)] ??= { token: t, n: 1, last: now - i }; });
+    store.set('counts', seed);
+  }
+  $('resetPicks').onclick = () => {
+    if (!confirm('Forget which tokens you print most and go back to the default quick picks?')) return;
+    store.set('counts', {}); renderQuick();
+  };
+  renderQuick();
 
   let deb;
   $('searchForm').onsubmit = e => { e.preventDefault(); clearTimeout(deb); setQty(1); search($('q').value); };

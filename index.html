@@ -91,6 +91,21 @@ button:disabled { opacity: .5; cursor: default; }
 .custom textarea { grid-column: 1 / -1; min-height: 60px; resize: vertical; }
 .custom button { grid-column: 1 / -1; }
 details summary { cursor: pointer; color: var(--muted); }
+
+/* App-only bits (shown when running inside the Android app) */
+.toggle { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: .9rem; cursor: pointer; }
+.toggle input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.printer { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: .9rem; }
+.printer b { color: var(--fg); font-weight: 600; }
+.printer button { padding: 6px 12px; font-size: .85rem; }
+#countdown { position: fixed; z-index: 10; left: 50%; transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px)); width: min(608px, calc(100% - 32px));
+  padding: 14px 16px 16px; text-align: left; overflow: hidden; font-weight: 700; font-size: 1.05rem;
+  background: var(--accent); color: var(--accent-ink); border-color: var(--accent); box-shadow: 0 6px 24px rgb(0 0 0 / .35); }
+#countdown small { display: block; font-weight: 500; font-size: .85rem; opacity: .8; }
+#countdown .fill { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: var(--accent-ink); transform-origin: left; }
+#countdown.run .fill { animation: drain 2s linear forwards; }
+@keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 </style>
 </head>
 <body>
@@ -109,6 +124,9 @@ details summary { cursor: pointer; color: var(--muted); }
     <div class="label">Quick picks</div>
     <div class="chips" id="quick"></div>
   </div>
+  <label class="toggle" id="autoWrap" hidden>
+    <input type="checkbox" id="autoPrint"> Auto-print what I say
+  </label>
   <div id="recentWrap" hidden>
     <div class="label">Recently printed</div>
     <div class="chips" id="recent"></div>
@@ -158,15 +176,28 @@ details summary { cursor: pointer; color: var(--muted); }
       <button type="button" id="save">Save image</button>
     </div>
     <button type="button" id="rawbt">Send straight to RawBT (experimental)</button>
+    <div class="printer" id="printerRow" hidden>
+      <span>Printer: <b id="printerName">not picked yet</b></span>
+      <button type="button" id="changePrinter">Change</button>
+    </div>
   </section>
 </div>
+
+<button type="button" id="countdown" hidden>
+  <span id="cdText">Printing…</span>
+  <small>Tap to cancel</small>
+  <span class="fill"></span>
+</button>
 
 <script>
 (() => {
   const W = 384;                 // printable dots on 58mm paper (48mm × 8 dots/mm)
   const H_ART = 536;             // keeps a real card's 63×88 proportions
   const $ = id => document.getElementById(id);
-  const state = { token: null, style: 'art', qty: 1, artImg: null, adj: { bright: 0, contrast: 0 } };
+  const state = { token: null, style: 'art', qty: 1, artImg: null, adj: { bright: 0, contrast: 0 },
+                  ready: Promise.resolve(), readyResolve: null };
+  // Present only inside the Android app: prints over Bluetooth and listens with Android's own speech recognizer
+  const NATIVE = window.TokenPrinterNative || null;
 
   // ---------- storage (best effort) ----------
   const store = {
@@ -274,9 +305,10 @@ details summary { cursor: pointer; color: var(--muted); }
   }
 
   let searchSeq = 0;
-  async function search(raw) {
+  async function search(raw, opts = {}) {
     raw = raw.trim();
     if (!raw) return;
+    cancelCountdown();
     const seq = ++searchSeq;
     const p = parse(raw);
     if (p.qty) setQty(Math.min(p.qty, 20));
@@ -297,6 +329,7 @@ details summary { cursor: pointer; color: var(--muted); }
           setStatus(tokens.length === 1 ? 'Found it. Ready to print.' : `Picked ${tokens[0].name}. ${tokens.length - 1} other match${tokens.length === 2 ? '' : 'es'} below.`);
           $('results').firstChild?.classList.add('selected');
           select(tokens[0]);
+          if (opts.voice && NATIVE && autoPrintOn()) armAutoPrint(seq);
         } else {
           setStatus(`${tokens.length} tokens found. Tap one to preview and print.`);
         }
@@ -317,7 +350,7 @@ details summary { cursor: pointer; color: var(--muted); }
       b.innerHTML = `<img loading="lazy" alt=""><span></span>`;
       b.querySelector('img').src = tok.thumb;
       b.querySelector('span').textContent = (tok.p != null ? `${tok.p}/${tok.t} ` : '') + tok.name;
-      b.onclick = () => { document.querySelectorAll('.result.selected').forEach(x => x.classList.remove('selected'));
+      b.onclick = () => { cancelCountdown(); document.querySelectorAll('.result.selected').forEach(x => x.classList.remove('selected'));
                           b.classList.add('selected'); select(tok); };
       g.appendChild(b);
     });
@@ -327,13 +360,16 @@ details summary { cursor: pointer; color: var(--muted); }
   // Same token = same name and P/T (wording of reminder text varies between printings)
   const artKey = t => [t.name, t.p, t.t].join('|');
 
+  // state.ready settles once the selected token's art has loaded (or failed), so auto-print waits for the real preview
+  const markReady = () => state.readyResolve?.();
+
   function loadArt(tok) {
     state.artImg = null;
-    if (!tok.art) return;
+    if (!tok.art) { markReady(); return; }
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => { if (state.token === tok) { state.artImg = img; draw(); } };
-    img.onerror = () => { if (state.token === tok) { $('styleArt').disabled = true; setStyle('text'); } };
+    img.onload = () => { if (state.token === tok) { state.artImg = img; draw(); markReady(); } };
+    img.onerror = () => { if (state.token === tok) { $('styleArt').disabled = true; setStyle('text'); markReady(); } };
     img.src = tok.art;
   }
 
@@ -342,6 +378,7 @@ details summary { cursor: pointer; color: var(--muted); }
     const saved = store.get('art', {})[artKey(tok)];
     if (saved) { tok.art = saved.art; tok.thumb = saved.thumb; }
     state.token = tok; state.artImg = null;
+    state.ready = new Promise(res => { state.readyResolve = res; setTimeout(res, 6000); });  // don't wait forever on slow art
     $('panel').hidden = false;
     $('artRow').hidden = true; $('artRow').innerHTML = '';
     $('moreArt').hidden = !tok.art;
@@ -574,7 +611,81 @@ details summary { cursor: pointer; color: var(--muted); }
   const toBlob = c => new Promise(res => c.toBlob(res, 'image/png'));
   const fileName = () => (state.token.name || 'token').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.png';
 
+  // ---------- printing inside the Android app ----------
+  // Pack the black/white sheet into 1 bit per dot (MSB first, 1 = black) — the format ESC/POS raster printing wants
+  function packBits(c) {
+    const w = c.width, h = c.height, wb = Math.ceil(w / 8);
+    const px = c.getContext('2d').getImageData(0, 0, w, h).data;
+    const out = new Uint8Array(wb * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+      if (px[(y * w + x) * 4] < 128) out[y * wb + (x >> 3)] |= 0x80 >> (x & 7);
+    let s = '';
+    for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode.apply(null, out.subarray(i, i + 0x8000));
+    return { b64: btoa(s), wb, h };
+  }
+
+  const waiting = {};            // print id → resolver, settled when the app reports back
+  let printSeq = 0;
+  function nativePrint() {
+    return new Promise(resolve => {
+      const id = 'p' + (++printSeq);
+      waiting[id] = resolve;
+      const { b64, wb, h } = packBits(sheet());
+      NATIVE.print(id, b64, wb, h);
+    });
+  }
+  const tokenLabel = () => (state.qty > 1 ? state.qty + '× ' : '') + state.token.name;
+
+  async function printNow() {
+    if (!state.token) return;
+    const label = tokenLabel();
+    remember();
+    setStatus(`Printing ${label}…`);
+    $('print').disabled = true;
+    const r = await nativePrint();
+    $('print').disabled = false;
+    if (r.ok) setStatus(`Printed ${label}.`);
+    else setStatus(r.message || "Couldn't print. Check the printer is on and try again.", true);
+  }
+
+  // Messages from the app arrive here
+  window.__tp = (kind, json) => {
+    let d = {}; try { d = JSON.parse(json); } catch {}
+    if (kind === 'voice') onNativeVoice(d);
+    else if (kind === 'print') { waiting[d.id]?.(d); delete waiting[d.id]; }
+    else if (kind === 'printer') showPrinter(d);
+    else if (kind === 'saved') setStatus(d.message, !d.ok);
+  };
+  function showPrinter(d) {
+    if (d.error) { setStatus(d.error, true); return; }
+    $('printerName').textContent = d.name || 'not picked yet';
+  }
+
+  // ---------- auto-print after voice: 2 seconds to change your mind ----------
+  let cdTimer = null;
+  const autoPrintOn = () => store.get('autoPrint', true);
+  async function armAutoPrint(seq) {
+    const tok = state.token;
+    await state.ready;                                       // let the art finish so the print matches the preview
+    if (seq !== searchSeq || state.token !== tok) return;    // something else happened meanwhile
+    startCountdown(`Printing ${tokenLabel()}`, () => { if (state.token === tok) printNow(); });
+  }
+  function startCountdown(text, go) {
+    cancelCountdown();
+    const bar = $('countdown');
+    $('cdText').textContent = text;
+    bar.hidden = false;
+    bar.classList.remove('run'); void bar.offsetWidth; bar.classList.add('run');   // restart the drain animation
+    cdTimer = setTimeout(() => { cdTimer = null; bar.hidden = true; go(); }, 2000);
+  }
+  function cancelCountdown() {
+    if (cdTimer) { clearTimeout(cdTimer); cdTimer = null; }
+    $('countdown').hidden = true;
+  }
+
   async function doPrint() {
+    cancelCountdown();
+    if (NATIVE) return printNow();
     const blob = await toBlob(sheet());
     const file = new File([blob], fileName(), { type: 'image/png' });
     remember();
@@ -586,6 +697,10 @@ details summary { cursor: pointer; color: var(--muted); }
     }
   }
   async function doSave() {
+    if (NATIVE) {                // the app's built-in browser can't download, so the app saves it to Pictures
+      NATIVE.saveImage(sheet().toDataURL('image/png').split(',')[1], fileName());
+      remember(); return;
+    }
     const blob = await toBlob(sheet());
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName();
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
@@ -598,17 +713,42 @@ details summary { cursor: pointer; color: var(--muted); }
   }
 
   // ---------- voice ----------
+  // A spoken request starts fresh: no number said means one copy
+  function voiceSearch(text) {
+    if (!parse(text).qty) setQty(1);
+    search(text, { voice: true });
+  }
+
+  // Inside the app: Android's speech recognizer
+  let nativeListening = false;
+  function onNativeVoice(d) {
+    if (d.type === 'start') {
+      nativeListening = true; $('mic').classList.add('listening');
+      setStatus('Listening… say something like "three treasure".');
+    } else if (d.type === 'partial') $('q').value = d.text || '';
+    else if (d.type === 'final') { $('q').value = d.text || ''; if (d.text) voiceSearch(d.text); }
+    else if (d.type === 'error') setStatus(
+      d.code === 'not-allowed' ? 'Microphone permission is off. Allow it for Token Printer in Android settings.' :
+      d.code === 'unavailable' ? "This phone has no speech recognizer. Install or update the Google app." :
+      d.code === 'network' ? "Voice needs internet. Check your connection." :
+      "Didn't catch that. Tap the mic and try again.", true);
+    else if (d.type === 'end') { nativeListening = false; $('mic').classList.remove('listening'); }
+  }
+
+  // In Chrome: the browser's speech recognition
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null;
-  if (!SR) { $('mic').disabled = true; $('mic').title = 'Voice needs Chrome on Android over https'; }
+  if (!SR && !NATIVE) { $('mic').disabled = true; $('mic').title = 'Voice needs Chrome on Android over https'; }
   $('mic').onclick = () => {
+    cancelCountdown();
+    if (NATIVE) { if (nativeListening) NATIVE.stopVoice(); else NATIVE.startVoice(); return; }
     if (!SR) return;
     if (rec) { rec.stop(); return; }
     rec = new SR(); rec.lang = 'en-US'; rec.interimResults = true; rec.maxAlternatives = 1;
     $('mic').classList.add('listening'); setStatus('Listening… say something like "three one one soldiers".');
     rec.onresult = e => {
       const r = e.results[e.results.length - 1]; $('q').value = r[0].transcript;
-      if (r.isFinal) search(r[0].transcript);
+      if (r.isFinal) voiceSearch(r[0].transcript);
     };
     rec.onerror = e => setStatus(e.error === 'not-allowed' ? 'Microphone permission was denied. Allow it in Chrome site settings.' : 'Didn\'t catch that. Tap the mic and try again.', true);
     rec.onend = () => { $('mic').classList.remove('listening'); rec = null; };
@@ -625,8 +765,9 @@ details summary { cursor: pointer; color: var(--muted); }
   $('q').oninput = () => { clearTimeout(deb); const v = $('q').value; if (v.trim().length >= 3) deb = setTimeout(() => search(v), 450); };
   $('styleArt').onclick = () => setStyle('art');
   $('styleText').onclick = () => setStyle('text');
-  $('minus').onclick = () => setQty(state.qty - 1);
-  $('plus').onclick = () => setQty(state.qty + 1);
+  $('minus').onclick = () => { cancelCountdown(); setQty(state.qty - 1); };
+  $('plus').onclick = () => { cancelCountdown(); setQty(state.qty + 1); };
+  $('countdown').onclick = () => { cancelCountdown(); setStatus('Auto-print canceled. Tap Print when ready.'); };
   $('qty').onfocus = () => $('qty').select();
   $('qty').oninput = () => { const n = parseInt($('qty').value, 10); if (!isNaN(n)) state.qty = Math.max(1, Math.min(20, n)); };
   $('qty').onchange = () => setQty($('qty').value);   // tidy up blanks or out-of-range numbers when you leave the box
@@ -659,6 +800,17 @@ details summary { cursor: pointer; color: var(--muted); }
     select({ name, type: $('cType').value.trim() || 'Creature', text: $('cText').value.trim(),
       p: p || null, t: t || null, colors: [], thumb: '', art: '' });
   };
+
+  // App-only controls
+  if (NATIVE) {
+    $('rawbt').hidden = true;
+    $('autoWrap').hidden = false;
+    $('autoPrint').checked = autoPrintOn();
+    $('autoPrint').onchange = () => store.set('autoPrint', $('autoPrint').checked);
+    $('printerRow').hidden = false;
+    $('changePrinter').onclick = () => NATIVE.choosePrinter();
+    try { showPrinter(JSON.parse(NATIVE.info()).printer || {}); } catch {}
+  }
 
   renderRecent();
   // Open in a working state

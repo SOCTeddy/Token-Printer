@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A receipt coming out of a printer slot, with a little token card on it. 108dp canvas, art kept inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- printer slot -->
+    <path
+        android:fillColor="#C9A24A"
+        android:pathData="M30,34 L78,34 Q81,34 81,37 L81,41 Q81,44 78,44 L30,44 Q27,44 27,41 L27,37 Q27,34 30,34 Z" />
+
+    <!-- paper with a torn bottom edge -->
+    <path
+        android:fillColor="#FBFBF8"
+        android:pathData="M36,40 L72,40 L72,76 L69,79 L66,76 L63,79 L60,76 L57,79 L54,76 L51,79 L48,76 L45,79 L42,76 L39,79 L36,76 Z" />
+
+    <!-- token art window -->
+    <path
+        android:fillColor="#16201C"
+        android:pathData="M40,48 L68,48 L68,64 L40,64 Z" />
+    <!-- mountain in the art -->
+    <path
+        android:fillColor="#FBFBF8"
+        android:pathData="M42,62 L50,53 L55,58 L59,54 L66,62 Z" />
+    <!-- P/T box -->
+    <path
+        android:fillColor="#16201C"
+        android:pathData="M58,67 L68,67 L68,73 L58,73 Z" />
+    <!-- name line -->
+    <path
+        android:fillColor="#16201C"
+        android:pathData="M40,67 L54,67 L54,69.5 L40,69.5 Z" />
+</vector>

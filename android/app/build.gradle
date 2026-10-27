@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.socteddy.tokenprinter'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.socteddy.tokenprinter'
+        minSdk 26
+        targetSdk 34
+        // Each GitHub build gets the next number, so a new APK installs over the old one
+        versionCode((System.getenv('GITHUB_RUN_NUMBER') ?: '1') as int)
+        versionName "1.${System.getenv('GITHUB_RUN_NUMBER') ?: '0'}"
+    }
+
+    // One fixed signing key so every build can update the installed app instead of needing an
+    // uninstall (which would wipe saved settings). The key isn't in the repo: the GitHub build
+    // writes it from the KEYSTORE_B64 secret, and the password comes from KEYSTORE_PASSWORD.
+    signingConfigs {
+        shared {
+            storeFile file('tokenprinter.keystore')
+            storePassword System.getenv('KEYSTORE_PASSWORD')
+            keyAlias 'tokenprinter'
+            keyPassword System.getenv('KEYSTORE_PASSWORD')
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.shared
+        }
+        debug {
+            signingConfig signingConfigs.shared
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}

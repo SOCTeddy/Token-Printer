@@ -278,7 +278,8 @@ details summary { cursor: pointer; color: var(--muted); }
     'indestructible','hexproof','prowess','ward','first_strike','double_strike'];
   const STOP = new Set(['a','an','the','token','tokens','creature','creatures','with','and','i','need','print','me',
     'give','make','of','please','times','copies','copy','get','want','some','by','for','that','has']);
-  const IRREG = {elves:'elf', wolves:'wolf', dwarves:'dwarf', mice:'mouse', octopi:'octopus'};
+  const IRREG = {elves:'elf', wolves:'wolf', dwarves:'dwarf', mice:'mouse', octopi:'octopus',
+    zombies:'zombie', faeries:'faerie', pixies:'pixie', zombi:'zombie'};
 
   function singular(w) {
     if (IRREG[w]) return IRREG[w];
@@ -287,9 +288,18 @@ details summary { cursor: pointer; color: var(--muted); }
     return w;
   }
 
-  function parse(raw) {
+  // Speech often hears "two two" as "tutu", "to to" or "22", and "one one" as "11" or "won won".
+  // splitPairs=false is the fallback reading where "11" really means eleven.
+  function parse(raw, splitPairs = true) {
     let s = ' ' + raw.toLowerCase() + ' ';
     s = s.replace(/first strike/g, 'first_strike').replace(/double strike/g, 'double_strike');
+    s = s.replace(/\btu ?tu\b/g, ' 2 2 ').replace(/\b(to|too|tu)\b/g, ' 2 ').replace(/\bwon\b/g, ' 1 ');
+    s = s.replace(/\bfor\s+for\b/g, ' 4 4 ').replace(/\b(fore|for)(?=\s+(\d|one|two|three|four|five|six|seven|eight|nine)\b)/g, ' 4 ')
+         .replace(/(\d|one|two|three|five|six|seven|eight|nine)\s+(fore|for)\b/g, '$1 4 ');
+    if (splitPairs && !/\d\s*\/\s*\d/.test(s)) {
+      s = s.replace(/\b(\d)(\d)(\d)\b/g, ' $1 $2 $3 ');   // "322 zombies" → 3 × 2/2 (nobody needs 322 tokens)
+      s = s.replace(/\b(\d)\1\b/g, ' $1 $1 ');            // "22 zombie" → 2/2
+    }
     s = s.replace(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/g, m => NUM[m]);
     const out = { qty: null, p: null, t: null, colors: [], colorless: false, kw: [], words: [] };
     const slash = s.match(/(\d+|x)\s*\/\s*(\d+|x)/);
@@ -376,13 +386,19 @@ details summary { cursor: pointer; color: var(--muted); }
     if (!raw) return;
     cancelCountdown();
     const seq = ++searchSeq;
-    const p = parse(raw);
-    if (p.qty) setQty(Math.min(p.qty, 20));
+    let p = parse(raw);
     state.token = null; state.artImg = null; $('panel').hidden = true;   // no stale preview while searching
     setStatus('Searching…');
     try {
       let cards = await scryfall(toQuery(p, true));
       if (!cards.length && p.words.length) cards = await scryfall(toQuery(p, false)); // names like "Marit Lage"
+      const plain = parse(raw, false);   // nothing for "11 treasure" as 1/1? then it meant eleven
+      if (!cards.length && JSON.stringify(plain) !== JSON.stringify(p)) {
+        p = plain;
+        cards = await scryfall(toQuery(p, true));
+        if (!cards.length && p.words.length) cards = await scryfall(toQuery(p, false));
+      }
+      if (seq === searchSeq && p.qty) setQty(Math.min(p.qty, 20));
       if (seq !== searchSeq) return;
       const tokens = pickTokens(cards, p);
       renderResults(tokens);

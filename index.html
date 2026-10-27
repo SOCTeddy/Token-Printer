@@ -326,6 +326,13 @@ details summary { cursor: pointer; color: var(--muted); }
     return out;
   }
 
+  // What the app took a spoken request to mean, in plain words
+  const CNAME = {w:'white', u:'blue', b:'black', r:'red', g:'green'};
+  function understood(p) {
+    return [p.qty, p.p != null ? `${p.p}/${p.t}` : null, ...p.colors.map(c => CNAME[c]),
+      p.colorless ? 'colorless' : null, ...p.words, ...p.kw].filter(x => x != null && x !== '').join(' ');
+  }
+
   function toQuery(p, typed) {
     const q = ['t:token'];
     if (p.p != null) q.push('pow=' + p.p);
@@ -399,6 +406,7 @@ details summary { cursor: pointer; color: var(--muted); }
         if (!cards.length && p.words.length) cards = await scryfall(toQuery(p, false));
       }
       if (seq === searchSeq && p.qty) setQty(Math.min(p.qty, 20));
+      if (seq === searchSeq && opts.voice) $('q').value = understood(p);   // "tutu zombie" → "2/2 zombie"
       if (seq !== searchSeq) return;
       const tokens = pickTokens(cards, p);
       renderResults(tokens);

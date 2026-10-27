@@ -108,7 +108,23 @@ public class MainActivity extends Activity {
         web.addJavascriptInterface(new Bridge(), "TokenPrinterNative");
 
         if (saved != null) web.restoreState(saved);
-        else web.loadUrl(SITE);
+        else loadFresh();
+    }
+
+    /** Load the site past any cached copy, so a just-pushed update shows up right away. */
+    void loadFresh() {
+        triedOfflineCopy = false;
+        web.loadUrl(SITE + "?v=" + System.currentTimeMillis());
+        loadedAt = System.currentTimeMillis();
+    }
+
+    long loadedAt, pausedAt;
+    static final long STALE_AFTER_MS = 30 * 60_000;   // away this long → pick up any update on return
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (pausedAt > 0 && System.currentTimeMillis() - pausedAt > STALE_AFTER_MS) loadFresh();
     }
 
     @Override
@@ -120,6 +136,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        pausedAt = System.currentTimeMillis();
         voice.cancel();
     }
 

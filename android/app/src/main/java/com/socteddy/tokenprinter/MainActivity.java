@@ -168,6 +168,19 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void print(String id, String base64Bits, int widthBytes, int height) {
+            printWith(id, base64Bits, widthBytes, height, "{}");
+        }
+
+        @JavascriptInterface
+        public void disconnect() {
+            main.removeCallbacks(idleDisconnect);
+            worker.execute(printer::close);
+        }
+
+        /** Same as print(), plus the page's printer settings as JSON (see PrinterLink.Options). */
+        @JavascriptInterface
+        public void printWith(String id, String base64Bits, int widthBytes, int height, String optionsJson) {
+            final PrinterLink.Options opt = PrinterLink.Options.parse(optionsJson);
             final byte[] bits;
             try {
                 bits = Base64.decode(base64Bits, Base64.DEFAULT);
@@ -181,10 +194,10 @@ public class MainActivity extends Activity {
             }
             main.post(() -> withBluetooth(() -> {
                 String address = prefs.getString("address", null);
-                if (address != null) startPrint(id, address, bits, widthBytes, height);
+                if (address != null) startPrint(id, address, bits, widthBytes, height, opt);
                 else pickPrinter((picked, err) -> {
                     if (picked == null) finishPrint(id, false, err);
-                    else startPrint(id, picked, bits, widthBytes, height);
+                    else startPrint(id, picked, bits, widthBytes, height, opt);
                 });
             }, () -> finishPrint(id, false,
                     "Token Printer needs the Nearby devices permission to reach the printer. Allow it in Android settings.")));
@@ -219,24 +232,40 @@ public class MainActivity extends Activity {
 
     // ---------- printing ----------
 
-    void startPrint(String id, String address, byte[] bits, int widthBytes, int height) {
+    void startPrint(String id, String address, byte[] bits, int widthBytes, int height, PrinterLink.Options opt) {
         main.removeCallbacks(idleDisconnect);
         worker.execute(() -> {
             try {
-                printer.print(bluetooth(), address, bits, widthBytes, height);
-                finishPrint(id, true, null);
+                printer.print(bluetooth(), address, bits, widthBytes, height, opt);
+                if (!opt.keepConnected) {
+                    // Give the last bytes time to leave the phone before hanging up
+                    try { Thread.sleep(1500); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    printer.close();
+                }
+                finishPrint(id, true, null, null);
             } catch (PrinterLink.PrintError e) {
-                finishPrint(id, false, e.getMessage());
+                finishPrint(id, false, e.getMessage(), e.detail);
+            } catch (SecurityException e) {
+                finishPrint(id, false, "Android blocked the Bluetooth connection. Allow \"Nearby devices\" for Token Printer in Android settings.",
+                        PrinterLink.describe(e));
             } catch (Exception e) {
-                finishPrint(id, false, "Couldn't reach the printer. Make sure it's on and close by, then try again.");
+                printer.close();
+                finishPrint(id, false, "Couldn't reach the printer. Make sure it's on and close by, then try again.",
+                        PrinterLink.describe(e));
             }
-            main.removeCallbacks(idleDisconnect);
-            main.postDelayed(idleDisconnect, IDLE_DISCONNECT_MS);
+            if (opt.keepConnected) {
+                main.removeCallbacks(idleDisconnect);
+                main.postDelayed(idleDisconnect, IDLE_DISCONNECT_MS);
+            }
         });
     }
 
     void finishPrint(String id, boolean ok, String message) {
-        sendToPage("print", obj("id", id, "ok", ok, "message", message));
+        finishPrint(id, ok, message, null);
+    }
+
+    void finishPrint(String id, boolean ok, String message, String detail) {
+        sendToPage("print", obj("id", id, "ok", ok, "message", message, "detail", detail));
     }
 
     BluetoothAdapter bluetooth() {

@@ -98,6 +98,13 @@ details summary { cursor: pointer; color: var(--muted); }
 .printer { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: .9rem; }
 .printer b { color: var(--fg); font-weight: 600; }
 .printer button { padding: 6px 12px; font-size: .85rem; }
+.settings { display: grid; gap: 12px; margin-top: 10px; padding: 14px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 14px; }
+.settings label.field { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); }
+.settings select { font: inherit; font-size: 1rem; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--fg); min-width: 0; }
+.settings .why { font-size: .78rem; color: var(--muted); }
+.settings .row button { flex: 1; }
 #countdown { position: fixed; z-index: 10; left: 50%; transform: translateX(-50%);
   bottom: calc(16px + env(safe-area-inset-bottom, 0px)); width: min(608px, calc(100% - 32px));
   padding: 14px 16px 16px; text-align: left; overflow: hidden; font-weight: 700; font-size: 1.05rem;
@@ -144,6 +151,61 @@ details summary { cursor: pointer; color: var(--muted); }
       <input id="cType" placeholder="Type line (e.g. Creature — Frog)" style="grid-column:1/-1">
       <textarea id="cText" placeholder="Abilities"></textarea>
       <button type="button" id="cMake">Use custom token</button>
+    </div>
+  </details>
+
+  <details id="settingsBox" hidden>
+    <summary>Printer settings</summary>
+    <div class="settings">
+      <div class="printer">
+        <span>Printer: <b id="printerName2">not picked yet</b></span>
+        <button type="button" id="changePrinter2">Change</button>
+      </div>
+      <label class="field">Connection method
+        <select id="setConnect">
+          <option value="auto">Automatic (tries each)</option>
+          <option value="secure">Standard serial (SPP)</option>
+          <option value="insecure">Serial without pairing check</option>
+          <option value="channel1">Direct channel 1</option>
+        </select>
+      </label>
+      <label class="field">Image command
+        <select id="setMode">
+          <option value="raster">Raster, GS v 0 (most printers)</option>
+          <option value="escstar">Bit image, ESC * (Epson style)</option>
+        </select>
+        <span class="why">Switch this if prints come out as garbage characters or nothing.</span>
+      </label>
+      <label class="field">Rows sent at a time
+        <select id="setBand">
+          <option value="24">24</option><option value="48">48</option><option value="96">96</option>
+          <option value="128">128</option><option value="255">255</option>
+        </select>
+      </label>
+      <label class="field">Pause between chunks
+        <select id="setDelay">
+          <option value="0">None</option><option value="5">5 ms</option><option value="10">10 ms</option>
+          <option value="20">20 ms</option><option value="40">40 ms</option>
+        </select>
+        <span class="why">Smaller chunks and a short pause help if prints come out garbled or cut off.</span>
+      </label>
+      <label class="field">Darkness
+        <select id="setHeat">
+          <option value="0">Printer default</option><option value="60">Lighter</option><option value="80">Normal</option>
+          <option value="120">Darker</option><option value="160">Darkest (slower)</option>
+        </select>
+      </label>
+      <label class="field">Blank lines after each print
+        <select id="setFeed">
+          <option value="0">0</option><option value="1">1</option><option value="2">2</option>
+          <option value="3">3</option><option value="4">4</option><option value="6">6</option>
+        </select>
+      </label>
+      <label class="toggle"><input type="checkbox" id="setKeep"> Stay connected between prints (faster)</label>
+      <div class="row">
+        <button type="button" id="testPrint">Print test page</button>
+        <button type="button" id="resetSettings">Reset to defaults</button>
+      </div>
     </div>
   </details>
 
@@ -624,15 +686,64 @@ details summary { cursor: pointer; color: var(--muted); }
     return { b64: btoa(s), wb, h };
   }
 
+  // Printer settings, saved on this phone and sent with every print
+  const PDEF = { connect: 'auto', mode: 'raster', bandRows: 128, bandDelayMs: 0, heat: 0, feedLines: 2, keepConnected: true };
+  let pset = Object.assign({}, PDEF, store.get('printerSettings', {}));
+  const PFIELDS = { setConnect: 'connect', setMode: 'mode', setBand: 'bandRows', setDelay: 'bandDelayMs', setHeat: 'heat', setFeed: 'feedLines' };
+  function showSettings() {
+    for (const [id, k] of Object.entries(PFIELDS)) $(id).value = String(pset[k]);
+    $('setKeep').checked = pset.keepConnected;
+  }
+  function readSettings() {
+    for (const [id, k] of Object.entries(PFIELDS)) pset[k] = typeof PDEF[k] === 'number' ? +$(id).value : $(id).value;
+    pset.keepConnected = $('setKeep').checked;
+    store.set('printerSettings', pset);
+    NATIVE?.disconnect?.();    // reconnect fresh with the new settings on the next print
+  }
+
   const waiting = {};            // print id → resolver, settled when the app reports back
   let printSeq = 0;
-  function nativePrint() {
+  function nativePrint(canvas) {
     return new Promise(resolve => {
       const id = 'p' + (++printSeq);
       waiting[id] = resolve;
-      const { b64, wb, h } = packBits(sheet());
-      NATIVE.print(id, b64, wb, h);
+      const { b64, wb, h } = packBits(canvas);
+      if (NATIVE.printWith) NATIVE.printWith(id, b64, wb, h, JSON.stringify(pset));
+      else NATIVE.print(id, b64, wb, h);           // older app without settings support
     });
+  }
+  const failText = r => (r.message || "Couldn't print. Check the printer is on and try again.") + (r.detail ? ` (Details: ${r.detail})` : '');
+
+  // A page that shows what the settings do: text, solid black, a gray ramp, and fine lines
+  function testSheet() {
+    const c = document.createElement('canvas'); c.width = W; c.height = 330;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, c.height); ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
+    ctx.font = 'bold 30px system-ui, Roboto, Arial, sans-serif'; ctx.fillText('Token Printer test', 12, 12);
+    ctx.font = '17px system-ui, Roboto, Arial, sans-serif';
+    const heatName = { 0: 'default', 60: 'lighter', 80: 'normal', 120: 'darker', 160: 'darkest' }[pset.heat] || pset.heat;
+    ctx.fillText(`${pset.mode === 'raster' ? 'GS v 0' : 'ESC *'} · ${pset.bandRows} rows · ${pset.bandDelayMs} ms · darkness ${heatName}`, 12, 52);
+    ctx.fillText(`Connection: ${pset.connect} · ${new Date().toLocaleString()}`, 12, 74);
+    ctx.fillRect(12, 104, W - 24, 36);                                     // solid black: shows banding
+    const B = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+    for (let s = 0; s < 8; s++) {                                         // 8-step gray ramp
+      const x0 = 12 + s * 45, level = (s + 0.5) / 8;
+      for (let y = 152; y < 200; y++) for (let x = x0; x < x0 + 42; x++)
+        if (B[y & 3][x & 3] / 16 < level) ctx.fillRect(x, y, 1, 1);
+    }
+    for (let i = 0; i < 6; i++) ctx.fillRect(12, 214 + i * 6, W - 24, 1 + (i >> 1));   // fine lines
+    for (let x = 12; x < W - 12; x += 8) ctx.fillRect(x, 254, 1, x % 48 === 12 ? 18 : 8);  // ruler
+    ctx.font = 'bold 22px system-ui, Roboto, Arial, sans-serif'; ctx.fillText('1/1  2/2  3/3  4/4', 12, 284);
+    ctx.lineWidth = 3; roundRect(ctx, 2, 2, W - 4, c.height - 4, 12); ctx.stroke();
+    threshold(ctx, W, c.height);
+    return c;
+  }
+  async function printTest() {
+    setStatus('Printing test page…');
+    $('testPrint').disabled = true;
+    const r = await nativePrint(testSheet());
+    $('testPrint').disabled = false;
+    setStatus(r.ok ? 'Test page sent.' : failText(r), !r.ok);
   }
   const tokenLabel = () => (state.qty > 1 ? state.qty + '× ' : '') + state.token.name;
 
@@ -642,10 +753,10 @@ details summary { cursor: pointer; color: var(--muted); }
     remember();
     setStatus(`Printing ${label}…`);
     $('print').disabled = true;
-    const r = await nativePrint();
+    const r = await nativePrint(sheet());
     $('print').disabled = false;
     if (r.ok) setStatus(`Printed ${label}.`);
-    else setStatus(r.message || "Couldn't print. Check the printer is on and try again.", true);
+    else setStatus(failText(r), true);
   }
 
   // Messages from the app arrive here
@@ -658,7 +769,7 @@ details summary { cursor: pointer; color: var(--muted); }
   };
   function showPrinter(d) {
     if (d.error) { setStatus(d.error, true); return; }
-    $('printerName').textContent = d.name || 'not picked yet';
+    $('printerName').textContent = $('printerName2').textContent = d.name || 'not picked yet';
   }
 
   // ---------- auto-print after voice: 2 seconds to change your mind ----------
@@ -808,7 +919,12 @@ details summary { cursor: pointer; color: var(--muted); }
     $('autoPrint').checked = autoPrintOn();
     $('autoPrint').onchange = () => store.set('autoPrint', $('autoPrint').checked);
     $('printerRow').hidden = false;
-    $('changePrinter').onclick = () => NATIVE.choosePrinter();
+    $('changePrinter').onclick = $('changePrinter2').onclick = () => NATIVE.choosePrinter();
+    $('settingsBox').hidden = false;
+    showSettings();
+    for (const id of [...Object.keys(PFIELDS), 'setKeep']) $(id).onchange = readSettings;
+    $('resetSettings').onclick = () => { pset = { ...PDEF }; showSettings(); readSettings(); setStatus('Printer settings reset.'); };
+    $('testPrint').onclick = printTest;
     try { showPrinter(JSON.parse(NATIVE.info()).printer || {}); } catch {}
   }
 

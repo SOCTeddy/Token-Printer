@@ -414,12 +414,19 @@ details summary { cursor: pointer; color: var(--muted); }
       else {
         const want = p.words.join(' ');
         const exact = tokens.filter(t => t.name.toLowerCase() === want);
-        const auto = tokens.length === 1 || (exact.length === 1 && tokens[0] === exact[0]);
+        // Typing: only auto-pick an obvious match. Voice: always pick one — the version you print
+        // most if it's among the matches, otherwise the plainest (results are sorted that way).
+        const usual = opts.voice ? favorite(tokens) : null;
+        const pick = usual || tokens[0];
+        const auto = opts.voice || tokens.length === 1 || (exact.length === 1 && tokens[0] === exact[0]);
         if (auto) {
-          setStatus(tokens.length === 1 ? 'Found it. Ready to print.' : `Picked ${tokens[0].name}. ${tokens.length - 1} other match${tokens.length === 2 ? '' : 'es'} below.`);
-          $('results').firstChild?.classList.add('selected');
-          select(tokens[0]);
-          if (opts.voice && NATIVE && autoPrintOn()) armAutoPrint(seq);
+          const others = tokens.length - 1;
+          setStatus(!others ? 'Found it. Ready to print.'
+            : `Picked ${usual ? 'your usual ' : ''}${chipLabel(pick)}. ${others} other match${others === 1 ? '' : 'es'} below — tap one to switch.`);
+          $('results').children[tokens.indexOf(pick)]?.classList.add('selected');
+          select(pick);
+          if (opts.voice && NATIVE && autoPrintOn())
+            armAutoPrint(seq, others ? (usual ? '(your usual)' : `(1 of ${tokens.length} matches)`) : '');
         } else {
           setStatus(`${tokens.length} tokens found. Tap one to preview and print.`);
         }
@@ -777,7 +784,7 @@ details summary { cursor: pointer; color: var(--muted); }
     $('testPrint').disabled = false;
     setStatus(r.ok ? 'Test page sent.' : failText(r), !r.ok);
   }
-  const tokenLabel = () => (state.qty > 1 ? state.qty + '× ' : '') + state.token.name;
+  const tokenLabel = () => (state.qty > 1 ? state.qty + '× ' : '') + chipLabel(state.token);
 
   async function printNow() {
     if (!state.token) return;
@@ -807,11 +814,23 @@ details summary { cursor: pointer; color: var(--muted); }
   // ---------- auto-print after voice: 2 seconds to change your mind ----------
   let cdTimer = null;
   const autoPrintOn = () => store.get('autoPrint', true);
-  async function armAutoPrint(seq) {
+  async function armAutoPrint(seq, note = '') {
     const tok = state.token;
     await state.ready;                                       // let the art finish so the print matches the preview
     if (seq !== searchSeq || state.token !== tok) return;    // something else happened meanwhile
-    startCountdown(`Printing ${tokenLabel()}`, () => { if (state.token === tok) printNow(); });
+    startCountdown(`Printing ${tokenLabel()} ${note}`.trim(), () => { if (state.token === tok) printNow(); });
+  }
+  // Of these matches, the one printed most often (null if none has been printed)
+  // The tally is per name + P/T; the exact version printed last (e.g. plain vs. Decayed) wins among those
+  function favorite(list) {
+    const counts = store.get('counts', {});
+    let best = null, bestScore = 0;
+    for (const t of list) {
+      const e = counts[artKey(t)]; if (!e) continue;
+      const score = e.n * 2 + (e.token?.text === t.text ? 1 : 0);
+      if (score > bestScore) { best = t; bestScore = score; }
+    }
+    return best;
   }
   function startCountdown(text, go) {
     cancelCountdown();

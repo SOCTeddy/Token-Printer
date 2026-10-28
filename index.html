@@ -115,7 +115,7 @@ details summary { cursor: pointer; color: var(--muted); }
   background: var(--accent); color: var(--accent-ink); border-color: var(--accent); box-shadow: 0 6px 24px rgb(0 0 0 / .35); }
 #countdown small { display: block; font-weight: 500; font-size: .85rem; opacity: .8; }
 #countdown .fill { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: var(--accent-ink); transform-origin: left; }
-#countdown.run .fill { animation: drain 2s linear forwards; }
+#countdown.run .fill { animation: drain var(--dur, 2s) linear forwards; }
 @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 </style>
 </head>
@@ -204,6 +204,16 @@ details summary { cursor: pointer; color: var(--muted); }
           <option value="0">0</option><option value="1">1</option><option value="2">2</option>
           <option value="3">3</option><option value="4">4</option><option value="6">6</option>
         </select>
+      </label>
+      <label class="field">Several copies
+        <select id="setCopies">
+          <option value="0">One strip with cut lines</option>
+          <option value="2">One at a time, 2 s to tear</option>
+          <option value="3">One at a time, 3 s to tear</option>
+          <option value="5">One at a time, 5 s to tear</option>
+          <option value="8">One at a time, 8 s to tear</option>
+        </select>
+        <span class="why">The countdown starts once each token has finished printing. Tap the bar to stop the rest.</span>
       </label>
       <label class="toggle"><input type="checkbox" id="setKeep"> Stay connected between prints (faster)</label>
       <div class="row">
@@ -391,6 +401,7 @@ details summary { cursor: pointer; color: var(--muted); }
   async function search(raw, opts = {}) {
     raw = raw.trim();
     if (!raw) return;
+    copyRun++;                   // a new request stops any copy-by-copy run in progress
     cancelCountdown();
     const seq = ++searchSeq;
     let p = parse(raw);
@@ -678,8 +689,8 @@ details summary { cursor: pointer; color: var(--muted); }
   }
 
   // Stack N copies with a dashed cut line between them
-  function sheet() {
-    const one = $('cv'), gap = 40, n = state.qty;
+  function sheet(n = state.qty) {
+    const one = $('cv'), gap = 40;
     const c = document.createElement('canvas');
     c.width = W; c.height = one.height * n + gap * (n - 1) + 60;  // trailing feed so the last token clears the tear bar
     const ctx = c.getContext('2d');
@@ -726,9 +737,11 @@ details summary { cursor: pointer; color: var(--muted); }
   }
 
   // Printer settings, saved on this phone and sent with every print
-  const PDEF = { connect: 'auto', mode: 'raster', bandRows: 128, bandDelayMs: 0, heat: 0, feedLines: 2, keepConnected: true };
+  const PDEF = { connect: 'auto', mode: 'raster', bandRows: 128, bandDelayMs: 0, heat: 0, feedLines: 2, keepConnected: true,
+                 tearSeconds: 3 };
   let pset = Object.assign({}, PDEF, store.get('printerSettings', {}));
-  const PFIELDS = { setConnect: 'connect', setMode: 'mode', setBand: 'bandRows', setDelay: 'bandDelayMs', setHeat: 'heat', setFeed: 'feedLines' };
+  const PFIELDS = { setConnect: 'connect', setMode: 'mode', setBand: 'bandRows', setDelay: 'bandDelayMs', setHeat: 'heat', setFeed: 'feedLines',
+                    setCopies: 'tearSeconds' };
   function showSettings() {
     for (const [id, k] of Object.entries(PFIELDS)) $(id).value = String(pset[k]);
     $('setKeep').checked = pset.keepConnected;
@@ -786,16 +799,61 @@ details summary { cursor: pointer; color: var(--muted); }
   }
   const tokenLabel = () => (state.qty > 1 ? state.qty + '× ' : '') + chipLabel(state.token);
 
+  // The app reports back once the data is sent, but the head is still printing it.
+  // Rough print time: ~1 s per 400 rows of paper, plus a moment for the motor to stop.
+  const printSeconds = rows => 0.6 + rows / 400;
+  let copyRun = 0;               // bumping this stops a copy-by-copy run in progress
+
   async function printNow() {
     if (!state.token) return;
-    const label = tokenLabel();
+    const label = tokenLabel(), n = state.qty, pause = +pset.tearSeconds || 0;
     remember();
-    setStatus(`Printing ${label}…`);
     $('print').disabled = true;
-    const r = await nativePrint(sheet());
+    if (n < 2 || !pause) {
+      setStatus(`Printing ${label}…`);
+      const r = await nativePrint(sheet());
+      $('print').disabled = false;
+      if (r.ok) setStatus(`Printed ${label}.`);
+      else setStatus(failText(r), true);
+      return;
+    }
+    // One token per print, with time to tear between them
+    const run = ++copyRun, one = sheet(1), name = chipLabel(state.token);
+    for (let i = 1; i <= n; i++) {
+      setStatus(`Printing ${name}, ${i} of ${n}…`);
+      const r = await nativePrint(one);
+      if (run !== copyRun) break;
+      if (!r.ok) { setStatus(failText(r) + (i > 1 ? ` ${i - 1} of ${n} printed.` : ''), true); break; }
+      if (i === n) { setStatus(`Printed ${n}× ${name}.`); break; }
+      await new Promise(res => setTimeout(res, printSeconds(one.height) * 1000));   // let the head finish
+      if (run !== copyRun) break;
+      const go = await tearPause(`Tear off ${i} of ${n}`, `Next one in`, pause, run);
+      if (go === 'tapped') { setStatus(`Stopped after ${i} of ${n}. Tap Print to start again.`); break; }
+      if (!go) break;            // a new search or print took over; leave its status alone
+    }
     $('print').disabled = false;
-    if (r.ok) setStatus(`Printed ${label}.`);
-    else setStatus(failText(r), true);
+  }
+
+  // Countdown bar between copies; resolves false if tapped (stop) or another print/search starts
+  function tearPause(title, lead, seconds, run) {
+    return new Promise(resolve => {
+      const bar = $('countdown'), end = Date.now() + seconds * 1000;
+      let tick;
+      const finish = ok => { clearInterval(tick); bar.hidden = true; bar.onclick = defaultBarClick;
+        bar.classList.remove('run'); resolve(ok); };
+      const show = () => {
+        if (run !== copyRun) return finish(false);
+        const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+        $('cdText').textContent = `${title} · ${lead} ${left}s`;
+        if (Date.now() >= end) finish(true);
+      };
+      bar.querySelector('small').textContent = 'Tap to stop the rest';
+      bar.style.setProperty('--dur', seconds + 's');
+      bar.hidden = false;
+      bar.classList.remove('run'); void bar.offsetWidth; bar.classList.add('run');
+      bar.onclick = () => { copyRun++; finish('tapped'); };
+      show(); tick = setInterval(show, 200);
+    });
   }
 
   // Messages from the app arrive here
@@ -813,6 +871,7 @@ details summary { cursor: pointer; color: var(--muted); }
 
   // ---------- auto-print after voice: 2 seconds to change your mind ----------
   let cdTimer = null;
+  function defaultBarClick() { cancelCountdown(); setStatus('Auto-print canceled. Tap Print when ready.'); }
   const autoPrintOn = () => store.get('autoPrint', true);
   async function armAutoPrint(seq, note = '') {
     const tok = state.token;
@@ -835,6 +894,8 @@ details summary { cursor: pointer; color: var(--muted); }
   function startCountdown(text, go) {
     cancelCountdown();
     const bar = $('countdown');
+    bar.querySelector('small').textContent = 'Tap to cancel';
+    bar.style.setProperty('--dur', '2s');
     $('cdText').textContent = text;
     bar.hidden = false;
     bar.classList.remove('run'); void bar.offsetWidth; bar.classList.add('run');   // restart the drain animation
@@ -842,6 +903,7 @@ details summary { cursor: pointer; color: var(--muted); }
   }
   function cancelCountdown() {
     if (cdTimer) { clearTimeout(cdTimer); cdTimer = null; }
+    if (!$('countdown').hidden && $('countdown').onclick !== defaultBarClick) return;   // a tear pause owns the bar
     $('countdown').hidden = true;
   }
 
@@ -962,7 +1024,7 @@ details summary { cursor: pointer; color: var(--muted); }
   $('styleText').onclick = () => setStyle('text');
   $('minus').onclick = () => { cancelCountdown(); setQty(state.qty - 1); };
   $('plus').onclick = () => { cancelCountdown(); setQty(state.qty + 1); };
-  $('countdown').onclick = () => { cancelCountdown(); setStatus('Auto-print canceled. Tap Print when ready.'); };
+  $('countdown').onclick = defaultBarClick;
   $('qty').onfocus = () => $('qty').select();
   $('qty').oninput = () => { const n = parseInt($('qty').value, 10); if (!isNaN(n)) state.qty = Math.max(1, Math.min(20, n)); };
   $('qty').onchange = () => setQty($('qty').value);   // tidy up blanks or out-of-range numbers when you leave the box
